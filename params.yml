@@ -1,8 +1,7 @@
-MODEL_NAME: gpt-oss
-SIZE: 20b
+MODEL_NAME: gemma-3
+SIZE: 12b
 PYTORCH_VERSION: rocm7.2.1_ubuntu24.04_py3.12_pytorch_release_2.9.1
 PROMETHEUS_VERSION: main-distroless
 GRAFANA_VERSION: 12.4.2
 NODE_EXPORTER_VERSION: v1-distroless
 AMD_DME_VERSION: v1.4.2
-KEPLER_VERSION: release-0.7.12
