@@ -8,4 +8,4 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 COPY . /app
 
-CMD ["python", "llama3-8b.py"]
+CMD ["torchrun", "--nproc_per_node=2", "llama3-8b.py"]
