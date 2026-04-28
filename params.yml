@@ -1,5 +1,5 @@
-MODEL_NAME: Ministral-3
-SIZE: 14B
+MODEL_NAME: llama3
+SIZE: 8b
 PYTORCH_VERSION: rocm7.2.1_ubuntu24.04_py3.12_pytorch_release_2.9.1
 PROMETHEUS_VERSION: main-distroless
 GRAFANA_VERSION: 12.4.2
