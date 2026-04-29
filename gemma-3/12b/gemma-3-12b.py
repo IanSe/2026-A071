@@ -5,7 +5,7 @@ import subprocess
 os.environ['CUDA_VISIBLE_DEVICES']="0,1"
 import torch
 
-pkgs = ['python-dotenv', 'trackio', 'transformers>=5.0', 'trl[peft]>=1.0.0', 'accelerate', 'bitsandbytes', 'datasets', 'ninja', 'codecarbon', 'packaging', 'zeus', 'wandb', 'huggingface-hub', 'tqdm', 'evaluate', 'bert_score', 'google-tunix' ]
+pkgs = ['python-dotenv', 'trackio', 'transformers>=5.0', 'trl[peft]>=1.0.0', 'accelerate', 'bitsandbytes', 'datasets', 'ninja', 'codecarbon', 'packaging', 'zeus', 'wandb', 'huggingface-hub', 'tqdm', 'evaluate', 'bert_score', 'google-tunix', 'nltk', 'rouge_score', 'matplotlib', 'pandas']
 
 def install_packages(packages):
     print("Resolving environment and installing packages via uv...")
@@ -31,8 +31,11 @@ login(token=hf_token, add_to_git_credential=False)
 auth_list()
 
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from datasets import load_dataset
+import urllib.request
+import threading
+import re
 from peft import LoraConfig, PeftModel, prepare_model_for_kbit_training, get_peft_model
 from transformers import (
     AutoModelForCausalLM,
@@ -48,6 +51,19 @@ import logging
 from zeus.device import get_gpus
 from zeus.monitor import ZeusMonitor
 from prometheus_client import start_http_server, Gauge
+import pandas as pd
+import matplotlib.pyplot as plt
+
+import transformers
+import peft
+import trl
+import accelerate
+print("Transformers: ", transformers.__version__)
+print("PEFT: ", peft.__version__)
+print("TRL: ", trl.__version__)
+print("Accelerate: ", accelerate.__version__)
+
+is_main = int(os.environ.get("LOCAL_RANK", 0)) == 0
 
 gpus = get_gpus()
 print(gpus)
@@ -79,94 +95,149 @@ def print_trainable_parameters(model):
 
 os.makedirs('code_carbon_gemma_3_12b', exist_ok=True)
 
-log_name = "biogemma_3_12b_logs"
-_logger = logging.getLogger(log_name)
-_channel = logging.FileHandler(log_name + '.log')
-_logger.addHandler(_channel)
-_logger.setLevel(logging.INFO)
+tracker = None
 
-start_http_server(8000)
+if is_main:
+    log_name = "biogemma_3_12b_logs"
+    _logger = logging.getLogger(log_name)
+    _channel = logging.FileHandler(log_name + '.log')
+    _logger.addHandler(_channel)
+    _logger.setLevel(logging.INFO)
 
-PHASE = Gauge('training_phase', 'Current fine-tuning phase (1=active, 0=inactive)', ['phase'])
-CPU_W = Gauge('training_cpu_power_watts', 'CPU power from codecarbon (watts)')
-RAM_W = Gauge('training_ram_power_watts', 'RAM power from codecarbon, estimate (watts)')
-CPU_E = Gauge('training_cpu_energy_kwh', 'Cumulative CPU energy (kWh)')
-RAM_E = Gauge('training_ram_energy_kwh', 'Cumulative RAM energy (kWh)')
+    start_http_server(8000)
 
-PHASES = ('dataset', 'load_model', 'fine_tuning')
-for _p in PHASES:
-    PHASE.labels(phase=_p).set(0)
+    PHASE = Gauge('training_phase', 'Current fine-tuning phase (1=active, 0=inactive)', ['phase'])
+    CPU_W = Gauge('training_cpu_power_watts', 'CPU power from codecarbon (watts)')
+    RAM_W = Gauge('training_ram_power_watts', 'RAM power from codecarbon, estimate (watts)')
+    GPU_W = Gauge('training_gpu_power_watts', 'GPU power total from amd_dme (watts)')
+    CPU_E = Gauge('training_cpu_energy_kwh', 'Cumulative CPU energy (kWh)')
+    RAM_E = Gauge('training_ram_energy_kwh', 'Cumulative RAM energy (kWh)')
+    GPU_E = Gauge('training_gpu_energy_kwh', 'Cumulative GPU energy from codecarbon (kWh)')
 
-POWER_CSV = './code_carbon_gemma_3_12b/power_timeseries.csv'
-with open(POWER_CSV, 'w') as _f:
-    _f.write('timestamp,cpu_w,ram_w,phase\n')
+    PHASES = ('dataset', 'load_model', 'fine_tuning', 'evaluation')
+    for _p in PHASES:
+        PHASE.labels(phase=_p).set(0)
 
-_current_phase = {'name': 'idle'}
+    POWER_CSV = './code_carbon_gemma_3_12b/power_timeseries.csv'
+    with open(POWER_CSV, 'w') as _f:
+        _f.write('timestamp,cpu_w,ram_w,cpu_e,ram_e,gpu_e,gpus,phase\n')
 
+    _current_phase = {'name': 'idle'}
+    PROMETHEUS_URL = os.environ.get('PROMETHEUS_URL', 'http://prometheus:9090')
+    AMD_DME_URL = os.environ.get('AMD_DME_URL', 'http://amd_dme:5000/metrics')
+    _gpu_energy_re = re.compile(
+        r'^gpu_energy_consumed\{[^}]*\}\s+([0-9.eE+-]+)', re.MULTILINE
+    )
 
-class PromAndCsvLoggerOutput(LoggerOutput):
-    """codecarbon LoggerOutput that ALSO updates Prometheus gauges and appends to power_timeseries.csv on every flush."""
-
-    def _publish(self, total, delta):
-        cpu_w = float(getattr(delta, 'cpu_power', 0.0) or 0.0)
-        ram_w = float(getattr(delta, 'ram_power', 0.0) or 0.0)
-        CPU_W.set(cpu_w)
-        RAM_W.set(ram_w)
-        CPU_E.set(float(getattr(total, 'cpu_energy', 0.0) or 0.0))
-        RAM_E.set(float(getattr(total, 'ram_energy', 0.0) or 0.0))
+    def query_prom(promql: str, timeout: float = 2.0):
+        """Run an instant PromQL query, return list of (labels_dict, value_float)."""
+        url = f"{PROMETHEUS_URL}/api/v1/query?query={urllib.parse.quote(promql)}"
         try:
-            with open(POWER_CSV, 'a') as fh:
-                fh.write(f"{datetime.utcnow().isoformat()},{cpu_w},{ram_w},{_current_phase['name']}\n")
+            with urllib.request.urlopen(url, timeout=timeout) as r:
+                payload = json.loads(r.read().decode('utf-8'))
+            if payload.get('status') != 'success':
+                return []
+            return [
+                (item['metric'], float(item['value'][1]))
+                for item in payload['data']['result']
+            ]
+        except Exception as e:
+            print(f"[prom] query failed: {e}", flush=True)
+            return []
+
+    def _read_gpu_power_w():
+        """Total GPU power across all hosts, watts."""
+        rows = query_prom('sum by (hostname) (rate(gpu_energy_consumed[5s])) / 1e6')
+        return sum(v for _, v in rows)
+
+    def _read_amd_gpu_energy_kwh():
+        try:
+            with urllib.request.urlopen(AMD_DME_URL, timeout=2) as r:
+                text = r.read().decode('utf-8', errors='ignore')
+            uj = sum(float(m.group(1)) for m in _gpu_energy_re.finditer(text))
+            return uj / 3.6e15
         except Exception:
-            pass
+            return 0.0
 
-    def out(self, total, delta):
-        super().out(total, delta)
-        self._publish(total, delta)
+    def _gpu_power_loop(stop_evt):
+        while not stop_evt.is_set():
+            GPU_E.set(_read_amd_gpu_energy_kwh())
+            stop_evt.wait(1.0)
 
-    def live_out(self, total, delta):
-        try:
-            super().live_out(total, delta)
-        except AttributeError:
-            pass
-        self._publish(total, delta)
+    _gpu_stop = threading.Event()
+    _gpu_thread = threading.Thread(target=_gpu_power_loop, args=(_gpu_stop,), daemon=True)
+    _gpu_thread.start()
 
 
-my_logger = PromAndCsvLoggerOutput(_logger, logging.INFO)
+    class PromAndCsvLoggerOutput(LoggerOutput):
+        """codecarbon LoggerOutput that ALSO updates Prometheus gauges and appends to power_timeseries.csv on every flush."""
 
-tracker = EmissionsTracker(
-    project_name = 'bio-gemma-3-12b',
-    output_dir="./code_carbon_gemma_3_12b/",
-    save_to_file=True,
-    on_csv_write='append',
-    output_file="emissions.csv",
-    tracking_mode="process",
-    measure_power_secs=1,
-    save_to_logger=True,
-    logging_logger=my_logger
-)
-tracker.start()
+        def _publish(self, total, delta):
+            cpu_w = float(getattr(delta, 'cpu_power', 0.0) or 0.0)
+            ram_w = float(getattr(delta, 'ram_power', 0.0) or 0.0)
+            cpu_e = float(float(getattr(total, 'cpu_energy', 0.0) or 0.0))
+            ram_e = float(float(getattr(total, 'ram_energy', 0.0) or 0.0))
+            CPU_W.set(cpu_w)
+            RAM_W.set(ram_w)
+            CPU_E.set(float(getattr(total, 'cpu_energy', 0.0) or 0.0))
+            RAM_E.set(float(getattr(total, 'ram_energy', 0.0) or 0.0))
+            GPU_E.set(float(getattr(total, 'gpu_energy', 0.0) or 0.0))
+            gpu_e = _read_amd_gpu_energy_kwh()
+            gpus_kw = _read_gpu_power_w()
+            ts = datetime.now(timezone.utc).isoformat()
+            with open(POWER_CSV, 'a') as fh:
+                fh.write(f"{ts},{cpu_w},{ram_w},{cpu_e},{ram_e},{gpu_e},{gpus_kw},{_current_phase['name']}\n")
+
+        def out(self, total, delta):
+            super().out(total, delta)
+            self._publish(total, delta)
+
+        def live_out(self, total, delta):
+            try:
+                super().live_out(total, delta)
+            except AttributeError:
+                pass
+            self._publish(total, delta)
+
+
+    my_logger = PromAndCsvLoggerOutput(_logger, logging.INFO)
+
+    tracker = EmissionsTracker(
+        project_name = 'bio-gemma-3-12b',
+        output_dir="./code_carbon_gemma_3_12b/",
+        save_to_file=True,
+        on_csv_write='append',
+        output_file="emissions.csv",
+        tracking_mode="process",
+        measure_power_secs=1,
+        save_to_logger=True,
+        logging_logger=my_logger
+    )
+    tracker.start()
+
 monitor = ZeusMonitor(gpu_indices=[torch.cuda.current_device()])
 
 
 def begin_phase(name: str):
-    """Mark a fine-tuning phase active: set Prometheus gauge to 1 and start a Zeus window."""
-    _current_phase['name'] = name
-    PHASE.labels(phase=name).set(1)
+    """Mark a fine-tuning phase active: start a Zeus window on every rank, set Prometheus gauge on rank 0."""
     monitor.begin_window(name)
+    if is_main:
+        _current_phase['name'] = name
+        PHASE.labels(phase=name).set(1)
 
 
 def end_phase(name: str):
-    """End a fine-tuning phase: close the Zeus window and clear the Prometheus gauge."""
+    """End a fine-tuning phase: close the Zeus window on every rank, clear Prometheus gauge on rank 0."""
     energy = monitor.end_window(name)
-    PHASE.labels(phase=name).set(0)
-    _current_phase['name'] = 'idle'
+    if is_main:
+        PHASE.labels(phase=name).set(0)
+        _current_phase['name'] = 'idle'
     return energy
 
 print('Mapping dataset')
 begin_phase('dataset')
 dataset = load_dataset("bio-nlp-umass/bioinstruct", split="train")
-dataset = dataset.map(create_conversation, remove_columns=dataset.features, batched=False)
+dataset = dataset.map(create_conversation, remove_columns=[], batched=False)
 ds_energy = end_phase('dataset')
 
 begin_phase('load_model')
@@ -198,7 +269,7 @@ peft_config = LoraConfig(
     r=16,
     bias="none",
     task_type="CAUSAL_LM",
-    target_modules= ['k_proj', 'q_proj', 'v_proj', 'o_proj', "gate_proj", "down_proj", "up_proj", "lm_head",]
+    target_modules= ['k_proj', 'q_proj', 'v_proj', 'o_proj', "gate_proj", "down_proj", "up_proj"]
 )
 
 model.config.pad_token_id = tokenizer.pad_token_id
@@ -209,18 +280,23 @@ training_arguments = TrainingArguments(
     report_to="wandb",
     eval_strategy="epoch",
     num_train_epochs=1,
-    optim="paged_adamw_8bit",
+    optim="adamw_torch_fused",
     per_device_train_batch_size=4,
     per_device_eval_batch_size=4,
     gradient_accumulation_steps=8,
     gradient_checkpointing=True,
     dataloader_num_workers = 4,
+    bf16=True,
     log_level="info",
     save_steps=500,
     logging_steps=20,
     learning_rate=2e-5,
     warmup_steps=100,
     lr_scheduler_type="constant",
+    push_to_hub=True,
+    hub_token=hf_token,
+    hub_model_id="darmasrmz/bio-gemma-3-12b-lora",
+    hub_strategy="end",
 )
 
 trainer = SFTTrainer(
@@ -238,104 +314,42 @@ trainer.train()
 
 print_trainable_parameters(model)
 
-new_model = 'Bio-gemma-3-12b'
-trainer.model.save_pretrained(new_model)
-model.push_to_hub("darmasrmz/bio-gemma-3-12b-lora", token = hf_token)
-tokenizer.push_to_hub("darmasrmz/bio-gemma-3-12b-lora", token = hf_token)
+
 ft_energy = end_phase('fine_tuning')
 
+if is_main:
+    new_model = 'bio-gemma-3-12b-lora'
+    model.save_pretrained(new_model)
+    tokenizer.save_pretrained(new_model)
 
-begin_phase('evaluation')
-import evaluate
-from tqdm import tqdm
+accelerator.wait_for_everyone()
 
-bertscore = evaluate.load("bertscore")
-rouge = evaluate.load("rouge")
+if is_main:
+    log_history = trainer.state.log_history
+    logs_df = pd.DataFrame(log_history)
 
-predictions = []
-references = []
+    train_loss = logs_df.dropna(subset=['loss'])
+    eval_loss = logs_df.dropna(subset=['eval_loss'])
 
-print("Starting generation...")
-for row in tqdm(test_dataset):
-    prompt = f"""Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.
+    plt.figure(figsize=(15, 8))
+    plt.plot(train_loss['epoch'], train_loss['loss'], label='Training Loss')
+    plt.plot(eval_loss['epoch'], eval_loss['eval_loss'], label='Validation Loss', marker='x')
+    plt.title('Función de pérdida')
+    plt.xlabel('Época')
+    plt.ylabel('Pérdida')
+    plt.legend()
+    plt.grid(True)
+    plt.show()
+    plt.tight_layout()
+    plt.savefig('loss_function.png', transparent=True)
 
-### Instruction:
-{row['instruction']}
+    print(f'Energy loading dataset: {ds_energy}')
+    print(f'Energy loading model: {lmodel_energy}')
+    print(f'Energy in fine-tuning model: {ft_energy}')
 
-### Input:
-{row['input']}
-
-### Response:
-"""
-
-    inputs = tokenizer(prompt, return_tensors="pt").to(accelerator.device)
-    with torch.no_grad():
-        outputs = model.generate(**inputs, max_new_tokens=256, temperature=0.1)
-
-    response = tokenizer.decode(outputs[0], skip_special_tokens=True)
-
-    if "### Response:" in response:
-        response = response.split("### Response:")[-1].strip()
-
-    predictions.append(response)
-    references.append(row['output'])
-
-print("Calculating metrics...")
-bertscore_results = bertscore.compute(predictions=predictions, references=references, lang="en")
-print(f"BERTScore F1 (Mean): {sum(bertscore_results['f1']) / len(bertscore_results['f1'])}")
-
-evaluation_energy = end_phase('evaluation')
-
-emissions = tracker.stop()
-
-import pandas as pd
-import matplotlib.pyplot as plt
-
-log_history = trainer.state.log_history
-logs_df = pd.DataFrame(log_history)
-
-train_loss = logs_df.dropna(subset=['loss'])
-eval_loss = logs_df.dropna(subset=['eval_loss'])
-
-plt.figure(figsize=(15, 8))
-plt.plot(train_loss['epoch'], train_loss['loss'], label='Training Loss')
-plt.plot(eval_loss['epoch'], eval_loss['eval_loss'], label='Validation Loss', marker='x')
-plt.title('Función de pérdida')
-plt.xlabel('Época')
-plt.ylabel('Pérdida')
-plt.legend()
-plt.grid(True)
-plt.show()
-plt.tight_layout()
-plt.savefig('loss_function.png', transparent=True)
-
-try:
-    power_df = pd.read_csv(POWER_CSV, parse_dates=['timestamp'])
-    if not power_df.empty:
-        fig, ax = plt.subplots(figsize=(15, 8))
-        ax.plot(power_df['timestamp'], power_df['cpu_w'], label='CPU (W)')
-        ax.plot(power_df['timestamp'], power_df['ram_w'], label='RAM (W)')
-
-        phase_colors = {'dataset': 'tab:orange', 'load_model': 'tab:green', 'fine_tuning': 'tab:red'}
-        for phase_name, color in phase_colors.items():
-            mask = power_df['phase'] == phase_name
-            if mask.any():
-                ax.axvspan(power_df.loc[mask, 'timestamp'].min(),
-                           power_df.loc[mask, 'timestamp'].max(),
-                           alpha=0.1, color=color, label=f'phase: {phase_name}')
-
-        ax.set_title('Consumo de potencia del contenedor (CPU y RAM)')
-        ax.set_xlabel('Tiempo')
-        ax.set_ylabel('Potencia (W)')
-        ax.legend(loc='upper right')
-        ax.grid(True)
-        fig.tight_layout()
-        fig.savefig('power_consumption.png', transparent=True)
-        plt.close(fig)
-except FileNotFoundError:
-    print(f'No power time series found at {POWER_CSV}')
-
-print(f'Energy loading dataset: {ds_energy}')
-print(f'Energy loading model: {lmodel_energy}')
-print(f'Energy in fine-tuning model: {ft_energy}')
-print(f'Energy in evaluation: {evaluation_energy}')
+    energy_summary = pd.DataFrame([
+        {'phase': 'dataset', 'energy': ds_energy},
+        {'phase': 'load_model', 'energy': lmodel_energy},
+        {'phase': 'fine_tuning', 'energy': ft_energy},
+    ])
+    energy_summary.to_csv('bio-gemma-3-12b-lora-energy_summary.csv', index=False)
