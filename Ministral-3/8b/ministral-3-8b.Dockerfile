@@ -1,4 +1,4 @@
-FROM rocm/pytorch:${PYTORCH_VERSION}
+FROM rocm/pytorch:rocm7.2.1_ubuntu24.04_py3.12_pytorch_release_2.9.1
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
@@ -8,4 +8,4 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 COPY . /app
 
-CMD ["torchrun", "--nproc_per_node=2", "${MODEL_NAME}-${SIZE}.py"]
+CMD ["python", "ministral-3-8b.py"]

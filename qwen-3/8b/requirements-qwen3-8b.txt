@@ -1,0 +1,12 @@
+# Installed into the ROCm PyTorch base image. If `import bitsandbytes` fails on AMD,
+# install a ROCm-compatible bitsandbytes build (see upstream bitsandbytes ROCm docs).
+accelerate>=1.2.0
+bitsandbytes>=0.45.0
+codecarbon>=2.7.0
+datasets>=3.0.0
+peft>=0.14.0
+prometheus-client>=0.20.0
+sentencepiece>=0.2.0
+transformers>=4.46.0
+trl>=0.20.0
+zeus-ml>=0.10.0

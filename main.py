@@ -53,6 +53,7 @@ def compose_template():
         GRAFANA_VERSION=params['GRAFANA_VERSION'],
         NODE_EXPORTER_VERSION=params['NODE_EXPORTER_VERSION'],
         AMD_DME_VERSION=params['AMD_DME_VERSION'],
+        KEPLER_VERSION=params['KEPLER_VERSION'],
     )
 
     with open(f"./{params['MODEL_NAME']}/{params['SIZE']}/docker-compose.yml", "w") as f:
@@ -62,7 +63,14 @@ def compose_template():
 
     os.makedirs(f"./{params['MODEL_NAME']}/{params['SIZE']}/grafana", exist_ok=True)
     os.makedirs(f"./{params['MODEL_NAME']}/{params['SIZE']}/metrics", exist_ok=True)
-    shutil.copy("./prometheus.yml", f"./{params['MODEL_NAME']}/{params['SIZE']}/prometheus.yml")
+
+    prometheus_template = Template(Path("./prometheus.yml").read_text())
+    prometheus_file = prometheus_template.substitute(
+        MODEL_NAME=params['MODEL_NAME'],
+    )
+    with open(f"./{params['MODEL_NAME']}/{params['SIZE']}/prometheus.yml", "w") as f:
+        f.write(prometheus_file)
+
     shutil.copy('./.env', f"./{params['MODEL_NAME']}/{params['SIZE']}/.env")
 
     python_file_path = f"./{params['MODEL_NAME']}/{params['SIZE']}/{params['MODEL_NAME']}-{params['SIZE']}.py"

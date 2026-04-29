@@ -1,19 +1,17 @@
 version: '3.9'
 
-name: 2026-A071_${MODEL_NAME}_${SIZE}
+name: 2026-A071_gemma-3_12b
 
 services:
-  ${MODEL_NAME}-fine-tuning:
-    container_name: ${MODEL_NAME}-fine-tuning
+  gemma-3-qlora-fine-tuning:
+    container_name: gemma-3-fine-tuning
     build:
       context: .
-      dockerfile: ${MODEL_NAME}-${SIZE}.Dockerfile
+      dockerfile: gemma-3-12b-qlora.Dockerfile
     ipc: host
     devices:
       - /dev/kfd:/dev/kfd
       - /dev/dri:/dev/dri
-    ports:
-      - "8000:8000"
     volumes:
       - ./:/app:z
       - /sys:/sys:ro
@@ -21,7 +19,7 @@ services:
       - backend
 
   prometheus:
-    image: prom/prometheus:${PROMETHEUS_VERSION}
+    image: prom/prometheus:main-distroless
     ports:
       - "9090:9090"
     volumes:
@@ -33,7 +31,7 @@ services:
       - '--storage.tsdb.path=/prometheus'
 
   node_exporter:
-    image: prom/node-exporter:${NODE_EXPORTER_VERSION}
+    image: prom/node-exporter:v1-distroless
     container_name: node_exporter
     ports:
       - "9100:9100"
@@ -44,7 +42,7 @@ services:
 
   amd_dme:
     container_name: amd_dme
-    image: rocm/device-metrics-exporter:${AMD_DME_VERSION}
+    image: rocm/device-metrics-exporter:v1.4.2
     ports:
       - "5000:5000"
     devices:
@@ -55,25 +53,11 @@ services:
     networks:
       - backend
 
-  kepler:
-    container_name: kepler
-    image: quay.io/sustainable_computing_io/kepler:${KEPLER_VERSION}
-    privileged: true
-    pid: host
-    ports:
-      - "9102:9102"
-    volumes:
-      - /proc:/proc
-      - /sys:/sys
-      - /var/run/docker.sock:/var/run/docker.sock:ro
-    networks:
-      - backend
-
   grafana:
-    image: grafana/grafana-oss:${GRAFANA_VERSION}
+    image: grafana/grafana-oss:12.4.2
     ports:
       - "3000:3000"
-    user: "$${UID}"
+    user: "${UID}"
     volumes:
       - ./grafana:/var/lib/grafana:z
     networks:

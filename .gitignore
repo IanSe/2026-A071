@@ -12,3 +12,17 @@ wheels/
 .env
 
 .DS_Store
+
+*.png
+*.csv
+*.json
+*.txt
+*.log
+*.err
+*.out
+*.log.gz
+*.log.bz2
+*.log.xz
+
+# add harmony.py to the gitignore
+gpt-oss/20b/harmony.py

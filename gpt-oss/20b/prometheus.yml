@@ -1,0 +1,23 @@
+global:
+  scrape_interval: 5s
+
+scrape_configs:
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  - job_name: 'host_metrics'
+    static_configs:
+      - targets: ['node_exporter:9100']
+
+  - job_name: 'gpu_metrics'
+    static_configs:
+      - targets: ['amd_dme:5000']
+
+  - job_name: 'training_power'
+    static_configs:
+      - targets: ['gpt-oss-fine-tuning:8000']
+
+  - job_name: 'kepler'
+    static_configs:
+      - targets: ['kepler:9102']

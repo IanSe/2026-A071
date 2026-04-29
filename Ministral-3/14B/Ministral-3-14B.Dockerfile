@@ -8,4 +8,4 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 COPY . /app
 
-CMD ["python", "Ministral-3-14B.py"]
+CMD ["torchrun", "--nproc-per-node=2", "Ministral-3-14B.py"]
