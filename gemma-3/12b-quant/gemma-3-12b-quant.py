@@ -36,6 +36,7 @@ from datasets import load_dataset
 import urllib.request
 import threading
 import re
+from peft import LoraConfig, PeftModel, prepare_model_for_kbit_training, get_peft_model
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
@@ -256,12 +257,23 @@ model = AutoModelForCausalLM.from_pretrained(
           quantization_config=bnb_config,
           dtype=torch.bfloat16,
           device_map={"": accelerator.local_process_index},
-          attn_implementation="eager"
+          attn_implementation="sdpa"
 )
+
+model = prepare_model_for_kbit_training(model)
 
 dataset_splits = dataset.train_test_split(test_size=0.2, shuffle=True)
 train_dataset = dataset_splits['train']
 test_dataset = dataset_splits['test']
+
+peft_config = LoraConfig(
+    lora_alpha=64,
+    lora_dropout=0.07,
+    r=64,
+    bias="none",
+    task_type="CAUSAL_LM",
+    target_modules= ['k_proj', 'q_proj', 'v_proj', 'o_proj', "gate_proj", "down_proj", "up_proj"]
+)
 
 model.config.pad_token_id = tokenizer.pad_token_id
 model.config.use_cache = False
@@ -296,6 +308,7 @@ trainer = SFTTrainer(
         eval_dataset=test_dataset,
         processing_class=tokenizer,
         args=training_arguments,
+        peft_config=peft_config
 )
 lmodel_energy = end_phase('load_model')
 
@@ -304,13 +317,15 @@ trainer.train()
 
 print_trainable_parameters(model)
 
-
 ft_energy = end_phase('fine_tuning')
 
 if is_main:
-    new_model = 'Bio-gemma-3-12b-quant'
+    tracker.stop()
+    new_model = 'bio-gemma-3-12b-quant'
     model.save_pretrained(new_model)
+    model.push_to_hub("darmasrmz/bio-gemma-3-12b-quant")
     tokenizer.save_pretrained(new_model)
+    tokenizer.push_to_hub("darmasrmz/bio-gemma-3-12b-quant")
 
 accelerator.wait_for_everyone()
 

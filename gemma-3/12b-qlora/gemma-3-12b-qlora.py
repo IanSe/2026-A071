@@ -5,7 +5,7 @@ import subprocess
 os.environ['CUDA_VISIBLE_DEVICES']="0,1"
 import torch
 
-pkgs = ['python-dotenv', 'trackio', 'transformers>=5.0', 'trl[peft]>=1.0.0', 'accelerate', 'bitsandbytes', 'datasets', 'ninja', 'codecarbon', 'packaging', 'zeus', 'wandb', 'huggingface-hub', 'tqdm', 'evaluate', 'bert_score', 'google-tunix', 'nltk', 'rouge_score']
+pkgs = ['python-dotenv', 'trackio', 'transformers>=5.0', 'trl[peft]>=1.0.0', 'accelerate', 'bitsandbytes', 'datasets', 'ninja', 'codecarbon', 'packaging', 'zeus', 'wandb', 'huggingface-hub', 'tqdm', 'pandas', 'matplotlib', 'prometheus-client']
 
 def install_packages(packages):
     print("Resolving environment and installing packages via uv...")
@@ -283,11 +283,11 @@ model.config.pad_token_id = tokenizer.pad_token_id
 model.config.use_cache = False
 
 training_arguments = TrainingArguments(
-    output_dir="./results",
+    output_dir="./qlora",
     report_to="wandb",
     eval_strategy="epoch",
     num_train_epochs=1,
-    optim="paged_adamw_8bit",
+    optim="adamw_torch_fused",
     per_device_train_batch_size=4,
     per_device_eval_batch_size=4,
     gradient_accumulation_steps=8,
@@ -321,13 +321,15 @@ trainer.train()
 
 print_trainable_parameters(model)
 
-
 ft_energy = end_phase('fine_tuning')
 
 if is_main:
-    new_model = 'Bio-gemma-3-12b-qlora'
+    tracker.stop()
+    new_model = 'bio-gemma-3-12b-qlora'
     model.save_pretrained(new_model)
+    model.push_to_hub("darmasrmz/bio-gemma-3-12b-qlora")
     tokenizer.save_pretrained(new_model)
+    tokenizer.push_to_hub("darmasrmz/bio-gemma-3-12b-qlora")
 
 accelerator.wait_for_everyone()
 

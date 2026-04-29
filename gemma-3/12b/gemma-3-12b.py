@@ -5,7 +5,7 @@ import subprocess
 os.environ['CUDA_VISIBLE_DEVICES']="0,1"
 import torch
 
-pkgs = ['python-dotenv', 'trackio', 'transformers>=5.0', 'trl[peft]>=1.0.0', 'accelerate', 'bitsandbytes', 'datasets', 'ninja', 'codecarbon', 'packaging', 'zeus', 'wandb', 'huggingface-hub', 'tqdm', 'evaluate', 'bert_score', 'google-tunix', 'nltk', 'rouge_score']
+pkgs = ['python-dotenv', 'trackio', 'transformers>=5.0', 'trl[peft]>=1.0.0', 'accelerate', 'bitsandbytes', 'datasets', 'ninja', 'codecarbon', 'packaging', 'zeus', 'wandb', 'huggingface-hub', 'tqdm', 'prometheus-client', 'pandas', 'matplotlib']
 
 def install_packages(packages):
     print("Resolving environment and installing packages via uv...")
@@ -316,9 +316,12 @@ print_trainable_parameters(model)
 ft_energy = end_phase('fine_tuning')
 
 if is_main:
-    new_model = 'Bio-gemma-3-12b'
+    tracker.stop()
+    new_model = 'bio-gemma-3-12b-lora'
     model.save_pretrained(new_model)
+    model.push_to_hub("darmasrmz/bio-gemma-3-12b-lora")
     tokenizer.save_pretrained(new_model)
+    tokenizer.push_to_hub("darmasrmz/bio-gemma-3-12b-lora")
 
 accelerator.wait_for_everyone()
 
