@@ -5,7 +5,7 @@ import subprocess
 os.environ['CUDA_VISIBLE_DEVICES']="0,1"
 import torch
 
-pkgs = ['python-dotenv', 'trackio', 'transformers>=5.0', 'trl[peft]>=1.0.0', 'accelerate', 'bitsandbytes', 'datasets', 'ninja', 'codecarbon', 'packaging', 'zeus', 'wandb', 'huggingface-hub', 'tqdm', 'evaluate', 'bert_score', 'google-tunix', 'nltk', 'rouge_score', 'matplotlib', 'pandas']
+pkgs = ['python-dotenv', 'trackio', 'transformers>=5.0', 'trl[peft]>=1.0.0', 'accelerate', 'bitsandbytes', 'datasets', 'ninja', 'codecarbon', 'packaging', 'zeus', 'wandb', 'huggingface-hub', 'tqdm', 'evaluate', 'bert_score', 'google-tunix', 'nltk', 'rouge_score']
 
 def install_packages(packages):
     print("Resolving environment and installing packages via uv...")
@@ -51,8 +51,6 @@ import logging
 from zeus.device import get_gpus
 from zeus.monitor import ZeusMonitor
 from prometheus_client import start_http_server, Gauge
-import pandas as pd
-import matplotlib.pyplot as plt
 
 import transformers
 import peft
@@ -147,7 +145,7 @@ if is_main:
 
     def _read_gpu_power_w():
         """Total GPU power across all hosts, watts."""
-        rows = query_prom('sum by (hostname) (rate(gpu_energy_consumed[5s])) / 1e6')
+        rows = query_prom('sum by (hostname) (rate(gpu_energy_consumed[2m])) / 1e6')
         return sum(v for _, v in rows)
 
     def _read_amd_gpu_energy_kwh():
@@ -318,13 +316,16 @@ print_trainable_parameters(model)
 ft_energy = end_phase('fine_tuning')
 
 if is_main:
-    new_model = 'bio-gemma-3-12b-lora'
+    new_model = 'Bio-gemma-3-12b'
     model.save_pretrained(new_model)
     tokenizer.save_pretrained(new_model)
 
 accelerator.wait_for_everyone()
 
 if is_main:
+    import pandas as pd
+    import matplotlib.pyplot as plt
+
     log_history = trainer.state.log_history
     logs_df = pd.DataFrame(log_history)
 
