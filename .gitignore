@@ -13,11 +13,8 @@ wheels/
 
 .DS_Store
 
-*.png
-*.csv
 *.json
 *.txt
-*.log
 *.err
 *.out
 *.log.gz

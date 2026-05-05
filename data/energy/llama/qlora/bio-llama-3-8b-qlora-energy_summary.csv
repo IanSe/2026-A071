@@ -1,0 +1,4 @@
+phase,energy
+dataset,"Measurement(time=4.755338191986084, gpu_energy={0: 296.24199999999837}, cpu_energy=None, dram_energy=None, soc_energy=None)"
+load_model,"Measurement(time=57.25073313713074, gpu_energy={0: 3518.778000000002}, cpu_energy=None, dram_energy=None, soc_energy=None)"
+fine_tuning,"Measurement(time=11638.133685827255, gpu_energy={0: 1805042.217}, cpu_energy=None, dram_energy=None, soc_energy=None)"
